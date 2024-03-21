@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Newel Teapot</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="Keywords" content="Bezier surface">
+<meta name="Description" content="Bezier surface drawing">
+<meta name="author" content="webhauser@gmail.com">
+<style>html, body { margin: 0; padding: 0; overflow: hidden; }</style>
+</head>
+<body>
+<noscript>JavaScript is Disabled. Please enable javascript and refresh the page</noscript>
+<script src="./tea.js"></script>
+<script src="../three.min.js"></script>
+<script src="../dat.gui.min.js"></script>
+<script src="../OrbitControls.js"></script>
+<script>
+const white  = 0xffffff;
+const yellow = 0xffff00;
+const blue   = 0x0000ff;
+
+var P;		// type [x,y,z]
+var C;		// type [x,y]			
+var lines;	// array of obj
+
+var scene, aspect, camera, renderer, controls;
+var gridXZ, axisHelper;
+var clock, deltaTime;
+var resetFlag = true;
+
+var icampos = new THREE.Vector3(0,10,200);		
+var icamrot = new THREE.Vector3(0,0,0);
+var camMove = new THREE.Vector3(1.0,1.0,1.0);
+var camRot  = new THREE.Vector3(1.0 * Math.PI / 180.0, 1.0 * Math.PI / 180.0, 0);	
+var zeroVec = new THREE.Vector3(0,0,0);
+
+// DAT Gui 
+var params = {
+name: "Newel Teapot",
+size: 30,
+N:3,
+show_grid:true,
+show_mesh:true,
+show_lines:false,
+show_outline:false,
+show_control:false,
+reset:function(){resetFlag=true;}
+};
+
+function init_camera() {
+	camera.position.set(icampos.x, icampos.y, icampos.z);
+	camera.rotation.set(icamrot.x, icamrot.y, icamrot.z);
+}
+
+function init_patch(name,i,s) {
+	var x,y,j,k,p;
+	var ix = patch_data[name].index[i];
+
+	P = [];
+	k = 0;
+	for(y=0; y<4; y++) {
+		P[y] = [];
+		for(x=0; x<4; x++) {
+			j = ix[k++];
+			p = patch_data[name].vertex[j];
+			P[y][x] = [p[0]*s,p[1]*s,p[2]*s];
+		}
+	}
+}
+
+function subdiv_curve(p0,p1,p2,p3) {
+
+	function hh(a,b) {
+		return [(a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2];
+	}
+
+	var q =	[hh(p0,p1), hh(p1,p2), hh(p2,p3)];
+	var r = [hh(q[0],q[1]), hh(q[1],q[2])];
+	var s = hh(r[0],r[1]);
+	return [p0, q[0], r[0], s, r[1], q[2], p3];
+}
+
+/* @todo: linearize P,Q */
+
+function calc_patch(n) {
+var i,j,k,l,v
+	// 4x4 => 4x7
+	function subdiv_patch_h() {
+	var Q=[];
+	var n=P[0].length;
+	  // Create result matrix
+	  for(j=0; j<P.length; j++) {
+	    Q[j]=[];
+	    for(i=0; i<2*n-1; i++) 
+		Q[j][i] = [0,0,0];
+	  }
+	  // Horizontal steps
+	  for(j=0; j<P.length; j++) {
+	    for(i=0; i<n-1; i+=3) {
+		v = subdiv_curve(P[j][i],P[j][i+1],P[j][i+2],P[j][i+3]);
+		for(k=2*i,l=0; l<7; l++) Q[j][k+l] = v[l];
+	    }
+	  }
+	  P = Q;
+	}
+
+	// 4x7 => 7x7
+	// 7x13 => 13x13
+	function subdiv_patch_v() {
+	var Q=[];
+	var n=P[0].length;
+	  // Create result matrix
+	   for(j=0; j<n; j++) {
+	    Q[j]=[];
+	    for(i=0; i<n; i++) 
+		Q[j][i] = [0,0,0];
+	  }
+	  // Vertical steps
+	  for(i=0; i<n; i++) {
+	    for(j=0; j<P.length-1; j+=3) {
+		v = subdiv_curve(P[j][i],P[j+1][i],P[j+2][i],P[j+3][i]);
+		for(k=2*j,l=0; l<7; l++) Q[k+l][i] = v[l];
+	    }
+	  }
+	  P = Q;
+	}
+
+	while(n-- > 0) {
+		subdiv_patch_h();
+		subdiv_patch_v();
+	}
+}
+
+function make_mesh() {
+	var mesh,p,i,j,k;
+	var n=P[0].length;
+	var geom = new THREE.Geometry();
+	const mate = new THREE.MeshLambertMaterial({ color:0xffffff, side:THREE.DoubleSide});
+	//const mate = new THREE.MeshPhongMaterial();
+
+	for(j=0; j<P.length; j++) {
+	  for(i=0; i<n; i++) {
+	    p = P[j][i];
+	    geom.vertices.push( new THREE.Vector3(p[0],p[1],p[2]) );
+	  }
+	}
+
+	for(j=0; j<P.length-1; j++) {
+	  for(i=0; i<n-1; i++) {
+	    k=j*n+i;
+	    geom.faces.push(new THREE.Face3(k,k+1,k+n));
+	    geom.faces.push(new THREE.Face3(k+1,k+n+1,k+n));
+	  }
+	}
+
+	geom.computeFaceNormals();
+	geom.computeVertexNormals();
+	mesh = new THREE.Mesh(geom, mate);
+	mesh.name = 'patch';
+	scene.add(mesh);
+}
+
+function make_patch_lines(col) {
+  var geom,line,p,i,j;
+  const mat = new THREE.LineBasicMaterial( { color: col, linewidth: 3 } );
+
+  function make_lines_h() {
+	for(j=0; j<P.length; j++) {
+	  geom = new THREE.Geometry();
+	  for(i=0; i<P[0].length; i++) {
+		p=P[j][i];
+		geom.vertices.push( new THREE.Vector3(p[0],p[1],p[2]) );
+	  }
+	  line = new THREE.Line( geom, mat );
+	  lines.push(line);
+	  scene.add(line);
+	}
+  }
+
+  function make_lines_v() {
+	for(i=0; i<P[0].length; i++) {	
+	  geom = new THREE.Geometry();
+	  for(j=0; j<P.length; j++) {
+		p=P[j][i];
+		geom.vertices.push( new THREE.Vector3(p[0],p[1],p[2]) );
+	  }
+	  line = new THREE.Line( geom, mat );
+	  lines.push(line);
+	  scene.add(line);
+	}
+  }
+
+  make_lines_h();
+  make_lines_v();
+}
+
+function create_patch_3d(name,i,n,col) {
+	init_patch(name,i,params.size);
+	if(params.show_control) make_patch_lines(white);
+	calc_patch(n);
+	if(params.show_mesh)  make_mesh();
+	if(params.show_lines) make_patch_lines(col);
+}
+
+function create_patches(name,n,col) {
+	for(let i=0; i<patch_data[name].index.length; i++) {
+		create_patch_3d(name,i,n,col);
+	}
+}
+
+function create_model(name) {
+	create_patches(name, params.N,blue);
+}
+
+/*
+name	- name of object
+i	- patch number
+k	- patch offset
+m	- patch addition
+s	- scale factor
+*/
+function init_curve_3d(name,i,k,m,s) {
+	var x,j,p;
+	var ix = patch_data[name].index[i];
+
+	C = [];
+	for(x=0; x<4; x++) {
+		j = ix[k];
+		p = patch_data[name].vertex[j];
+		C[x] = [p[0]*s,p[1]*s,p[2]*s];
+		k += m;
+	}
+}
+
+function calc_curve_3d(n) {
+	var i,j,k,v,D;
+	while(n-- > 0) {
+		D=[];
+		for(i=0; i<C.length-1; i+=3) {
+			v = subdiv_curve(C[i],C[i+1],C[i+2],C[i+3]);
+			for(k=2*i,j=0; j<7; j++) D[j+k] = v[j];
+		}
+		C=D;
+	}
+}
+
+function make_curve_lines(col) {
+	var line,p,i;
+	const mat = new THREE.LineBasicMaterial( { color: col, linewidth: 1 } );
+	var geom = new THREE.Geometry();
+	for(i=0; i<C.length; i++) {
+		p=C[i];
+		geom.vertices.push( new THREE.Vector3(p[0],p[1],p[2]) );
+	}
+	line = new THREE.Line( geom, mat );
+	lines.push(line);
+	scene.add(line);
+}
+
+function create_curve_3d(name,i,k,m,n,col) {
+	init_curve_3d(name,i,k,m,params.size);
+	calc_curve_3d(n);
+	make_curve_lines(col);
+}
+
+function create_model_lines(name) {
+	for(let i=0; i<patch_data[name].index.length; i++) {
+		create_curve_3d(name,i, 0,1,params.N,yellow);
+		create_curve_3d(name,i, 4,1,params.N,yellow);
+		create_curve_3d(name,i, 8,1,params.N,yellow);
+		create_curve_3d(name,i,12,1,params.N,yellow);
+		create_curve_3d(name,i, 0,4,params.N,yellow);
+		create_curve_3d(name,i, 1,4,params.N,yellow);
+		create_curve_3d(name,i, 2,4,params.N,yellow);
+		create_curve_3d(name,i, 3,4,params.N,yellow);
+	}
+}
+
+function remove_all() {
+	var obj = scene.getObjectByName('patch');
+       	if(obj) {
+		scene.remove( obj );
+		obj.geometry.dispose();
+	}
+	if(lines) {
+		for(let i=0;i<lines.length;i++) {
+			scene.remove( lines[i] );
+			lines[i].geometry.dispose();
+		}
+	}
+	lines=[];
+}
+
+function display_lines() {}
+
+function display_object(object, bool) {
+	object.traverse( function(child) {
+		child.visible = bool;
+	});
+}
+
+var render = function () {			
+	deltaTime = clock.getDelta();		
+	requestAnimationFrame( render );
+
+	if(resetFlag) {
+		remove_all();
+		create_model('teapot');
+		if(params.show_outline) create_model_lines('teapot');
+		resetFlag=false;
+	}
+
+	display_object(gridXZ,params.show_grid);
+				
+	renderer.render( scene, camera );
+	params.time += deltaTime; 
+};
+
+function gridHelper(){
+	var grid = new THREE.GridHelper(100, 50);
+	grid.position.set(0,0,0);
+	return(grid);
+}
+
+function initgui() {
+	var guj,gui = new dat.GUI();
+	gui.add(params, 'name');
+	guj = gui.addFolder('Simulation');
+	guj.add(params, 'N', 1, 8).name('iteration');
+	guj.add(params, 'size', 10, 500);
+	guj=gui.addFolder('Display');	
+	guj.add(params, 'show_grid',true).name("Grid");
+	guj.add(params, 'show_control',false).name("Control poly");
+	guj.add(params, 'show_outline',false).name("Outline");
+	guj.add(params, 'show_mesh',true).name("Mesh");
+	var showLines = guj.add(params, 'show_lines',true).name("Lines");
+	//showLines.onChange(function(value) {display_lines( value );});
+	gui.add(params, 'reset');
+}
+
+function init() {
+	clock = new THREE.Clock(); 
+	scene = new THREE.Scene();
+	aspect = window.innerWidth / window.innerHeight;
+	camera = new THREE.PerspectiveCamera( 75, aspect, 0.1, 1000 );
+	renderer = new THREE.WebGLRenderer();
+		
+	// LIGHT
+	var light = new THREE.PointLight(0xffffff);
+	light.position.set(100,100,-100);
+	scene.add(light);
+	light = new THREE.PointLight(0x00cc00);
+	light.position.set(170,150,200);
+	scene.add(light);
+	light = new THREE.PointLight(0x0000ff);
+	light.position.set(0,0,100);
+	scene.add(light);
+	light = new THREE.PointLight(0x333333);
+	light.position.set(-10,-210,-10);
+	scene.add(light);
+
+	renderer.setSize( window.innerWidth, window.innerHeight );
+	window.addEventListener( 'resize', function(event) {
+		camera.aspect = window.innerWidth / window.innerHeight;
+		camera.updateProjectionMatrix();
+		renderer.setSize( window.innerWidth, window.innerHeight );
+	}, false );
+		
+	document.body.appendChild( renderer.domElement );
+
+	// Grid and axes
+	axisHelper = new THREE.AxisHelper( 5 );
+	scene.add( axisHelper );
+	gridXZ = gridHelper();
+	scene.add( gridXZ );
+	
+	// Camera control
+	init_camera();
+	controls = new THREE.OrbitControls( camera );
+	controls.addEventListener( 'change', render );	
+
+	initgui();
+}
+init();
+render();
+</script>
+</body>
+</html>
